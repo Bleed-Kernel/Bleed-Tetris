@@ -14,8 +14,9 @@ uint32_t pt_colors[] = {
 	0x0026ff00,
 	0xffe60000,
 	0xcc42eb00,
-	//0x00e5ff00,
+	0x00e5ff00,
 	0xfca00a00,
+	0x1fb84a00,
 };
 
 #include "ptetris.h"

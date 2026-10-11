@@ -40,7 +40,7 @@ struct PtRuntime {
 	0,
 };
 
-#define BLOCK_LEN 5
+#define BLOCK_LEN 7
 
 // uint32_t pt_colors[BLOCK_LEN + 1] is expected to be defined
 
@@ -84,8 +84,14 @@ struct PtBlock {
 		},
 		{
 			{0, 0, 0, 0},
-			{5, 5, 0, 0},
-			{0, 5, 5, 0},
+			{6, 6, 0, 0},
+			{0, 6, 6, 0},
+			{0, 0, 0, 0},
+		},
+		{
+			{0, 0, 7, 0},
+			{0, 0, 7, 0},
+			{0, 7, 7, 0},
 			{0, 0, 0, 0},
 		},
 	}
@@ -132,13 +138,18 @@ void pt_draw_block(int bx, int by, int col) {
 int pt_field_possible(uint8_t b[4][4], int ox, int oy) {
 	for (int x = 0; x < 4; x++) {
 		for (int y = 0; y < 4; y++) {
-			if ((x + ox) >= pt.width || x + ox <= -1) {
+			if (b[x][y] == 0) continue;
+
+			if ((x + ox) >= pt.width || (x + ox) <= -1) {
+				return 0;
+			}
+
+			if ((y + oy) >= pt.height || (y + oy) <= -1) {
 				return 0;
 			}
 
 			// Detect impossible overlap
-			if (b[x + ox][y + oy] != 0 &&
-					pt_main_field.b[x][y] != 0) {
+			if (pt_main_field.b[x + ox][y + oy] != 0) {
 				return 0;
 			}
 		}
@@ -170,28 +181,21 @@ int pt_field_rotate() {
 }
 
 int pt_field_shift(int ox, int oy) {
-	for (int x = 0; x < 4; x++) {
-		for (int y = 0; y < 4; y++) {
-			if (pt_blocks.b[pt_blocks.curr][x][y] == 0) continue;
+	uint8_t (*b)[4] = pt_blocks.b[pt_blocks.curr];
 
-			if (pt_blocks.b[pt_blocks.curr][x][y] != 0 &&
-					pt_main_field.b[x + pt_blocks.x][y + pt_blocks.y] != 0) {
-				return PT_GAME_OVER;
-			}
+	if (!pt_field_possible(b, pt_blocks.x, pt_blocks.y)) {
+		return PT_GAME_OVER;
+	}
 
-			// Detect gravity/hit
-			if (pt_main_field.b[x + pt_blocks.x][y + pt_blocks.y + oy] != 0
-					|| (y + pt_blocks.y + oy) >= pt.height) {
-				return PT_IMPOSSIBLE;
-			}
+	// Detect gravity/hit
+	if (!pt_field_possible(b, pt_blocks.x, pt_blocks.y + oy)) {
+		return PT_IMPOSSIBLE;
+	}
 
-			// Detect impossible side swipe
-			if (pt_main_field.b[pt_blocks.x + x + ox][pt_blocks.y + y + oy] != 0
-					|| (pt_blocks.x + x + ox) >= pt.width || (pt_blocks.x + x + ox) <= -1) {
-				pt_blocks.y += oy;
-				return PT_SIDE_SWIPE;
-			}
-		}
+	// Detect impossible side swipe
+	if (!pt_field_possible(b, pt_blocks.x + ox, pt_blocks.y + oy)) {
+		pt_blocks.y += oy;
+		return PT_SIDE_SWIPE;
 	}
 
 	pt_blocks.x += ox;
@@ -248,9 +252,10 @@ void pt_merge() {
 
 void pt_shift_down(int yo) {
 	for (int x = 0; x < pt.width; x++) {
-		for (int y = yo - 1; y != 0; y--) {
+		for (int y = yo - 1; y >= 0; y--) {
 			pt_main_field.b[x][y + 1] = pt_main_field.b[x][y];
 		}
+		pt_main_field.b[x][0] = 0;
 	}
 }
 
@@ -280,11 +285,11 @@ int pt_step() {
 		pt_blocks.x = 4;
 		break;
 	case PT_GAME_OVER:
-		return 1;
+		return PT_GAME_OVER;
 	}
 
 	pt_check_lines();
-	return 0;
+	return PT_NORMAL;
 }
 
 #endif
