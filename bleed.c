@@ -1,22 +1,28 @@
 // Bleed Kernel frontend for ptetris
-// draws into a backbuffer that gets flipped to /dev/fb0, input is raw key events off stdin
+// runs as a window on the crime-scene desktop, keys come from the desktop too
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
-#include <signal.h>
 
 #include <syscalls.h>
 #include <keyboard.h>
-#include <display.h>
-#include <console.h>
 #include <hpet.h>
+
+#include <crime/crime.h>
 
 #define FIELD_WIDTH     10
 #define FIELD_HEIGHT    20
 #define MAX_BLOCK_SIZE  40
+#define MIN_BLOCK_SIZE  4
+
+#define WINDOW_WIDTH    580
+#define WINDOW_HEIGHT   512
+
+// the widest line of the side panel, in characters
+#define PANEL_CHARS     17
 
 #define COL_BLACK       0x000000
 #define COL_WHITE       0xffffff
@@ -44,10 +50,7 @@ enum {
 	STATE_GAME_OVER,
 };
 
-static uint32_t *fb;
-static struct fb_info fb_info;
-static uint32_t fb_pitch_pixels;
-static int fb_fd = -1;
+static cs_window_t *win;
 static int hpet_fd = -2;
 
 // top left of the playfield on screen
@@ -59,12 +62,7 @@ static int state = STATE_PLAYING;
 static int score;
 static int level = 1;
 static uint64_t last_step_ms;
-static volatile int quit;
-
-static uint32_t old_kbd_flags;
-static uint32_t old_tty_flags;
-static int have_old_kbd_flags;
-static int have_old_tty_flags;
+static int quit;
 
 // font8x8_basic
 // https://github.com/dhepper/font8x8/blob/master/font8x8_basic.h
@@ -141,11 +139,11 @@ static void fill_rect(int x, int y, int w, int h, uint32_t col) {
 
 	if (x < 0) x = 0;
 	if (y < 0) y = 0;
-	if (x1 > (int)fb_info.width) x1 = (int)fb_info.width;
-	if (y1 > (int)fb_info.height) y1 = (int)fb_info.height;
+	if (x1 > win->width) x1 = win->width;
+	if (y1 > win->height) y1 = win->height;
 
 	for (int py = y; py < y1; py++) {
-		uint32_t *row = &fb[(uint32_t)py * fb_pitch_pixels];
+		uint32_t *row = &win->pixels[py * win->pitch];
 		for (int px = x; px < x1; px++)
 			row[px] = col;
 	}
@@ -221,7 +219,7 @@ static void draw(void) {
 	int field_w = pt.width * pt.block_size;
 	int field_h = pt.height * pt.block_size;
 
-	fill_rect(0, 0, (int)fb_info.width, (int)fb_info.height, COL_BLACK);
+	fill_rect(0, 0, win->width, win->height, COL_BLACK);
 	fill_rect(field_x - 2, field_y - 2, field_w + 4, field_h + 4, COL_WHITE);
 
 	pt_render();
@@ -257,7 +255,7 @@ static void draw(void) {
 	else if (state == STATE_GAME_OVER)
 		draw_banner("GAME OVER", "R RETRY  Q QUIT");
 
-	_ioctl(fb_fd, FB_IOC_FLIP, fb);
+	cs_window_commit(win, 0, 0, win->width, win->height);
 }
 
 static uint64_t step_interval_ms(void) {
@@ -358,112 +356,96 @@ static int handle_key(const keyboard_event_t *ev) {
 	return 0;
 }
 
-static void sigint_handler(int sig) {
-	(void)sig;
-	quit = 1;
-}
+// fit the field and the panel next to it into whatever size the window is
+static void layout(void) {
+	int size = (win->height - 32) / FIELD_HEIGHT;
+	if (size > MAX_BLOCK_SIZE) size = MAX_BLOCK_SIZE;
 
-static void input_init(void) {
-	uint32_t flags;
+	int panel_w;
+	for (;; size--) {
+		if (size < MIN_BLOCK_SIZE) size = MIN_BLOCK_SIZE;
 
-	// stdin is the keyboard device, shared with the shell so put it back on the way out
-	if (_ioctl(0, TTY_IOCTL_GET_FLAGS, &flags) == 0) {
-		old_kbd_flags = flags;
-		have_old_kbd_flags = 1;
+		text_scale = (size >= 24) ? 2 : 1;
+		panel_w = PANEL_CHARS * 8 * text_scale;
+		if (size == MIN_BLOCK_SIZE || FIELD_WIDTH * size + size + panel_w + 16 <= win->width)
+			break;
 	}
-	flags = TTY_NONBLOCK;
-	_ioctl(0, TTY_IOCTL_SET_FLAGS, &flags);
-
-	// stop the tty echoing keys over the top of the game
-	if (_ioctl(1, TTY_IOCTL_GET_FLAGS, &flags) == 0) {
-		old_tty_flags = flags;
-		have_old_tty_flags = 1;
-		flags &= ~(TTY_ECHO | TTY_CANNONICAL);
-		_ioctl(1, TTY_IOCTL_SET_FLAGS, &flags);
-	}
-
-	struct sigaction act = {0};
-	act.handler = (uintptr_t)sigint_handler;
-	act.flags = SA_RESTART;
-	if (sigemptyset(&act.mask) == 0)
-		sigaction(SIGINT, &act, NULL);
-}
-
-static void input_restore(void) {
-	if (have_old_kbd_flags)
-		_ioctl(0, TTY_IOCTL_SET_FLAGS, &old_kbd_flags);
-	if (have_old_tty_flags)
-		_ioctl(1, TTY_IOCTL_SET_FLAGS, &old_tty_flags);
-}
-
-static int video_init(void) {
-	fb_fd = _open("/dev/fb0", O_RDWR);
-	if (fb_fd < 0) {
-		printf("tetris: cannot open /dev/fb0\n");
-		return -1;
-	}
-
-	if (_ioctl(fb_fd, FB_IOC_GET_INFO, &fb_info) < 0) {
-		printf("tetris: cannot read framebuffer info\n");
-		return -1;
-	}
-
-	if (fb_info.bpp != 32) {
-		printf("tetris: unsupported framebuffer depth (%d bpp)\n", (int)fb_info.bpp);
-		return -1;
-	}
-
-	fb = (uint32_t *)malloc(fb_info.height * fb_info.pitch);
-	if (!fb) {
-		printf("tetris: out of memory for the backbuffer\n");
-		return -1;
-	}
-	fb_pitch_pixels = (uint32_t)(fb_info.pitch >> 2);
 
 	pt.width = FIELD_WIDTH;
 	pt.height = FIELD_HEIGHT;
-	pt.block_size = ((int)fb_info.height - 32) / FIELD_HEIGHT;
-	if (pt.block_size > MAX_BLOCK_SIZE) pt.block_size = MAX_BLOCK_SIZE;
-	if (pt.block_size < 4) pt.block_size = 4;
+	pt.block_size = size;
 
-	text_scale = (pt.block_size >= 24) ? 2 : 1;
-	field_x = ((int)fb_info.width - pt.width * pt.block_size) / 2;
-	field_y = ((int)fb_info.height - pt.height * pt.block_size) / 2;
+	field_x = (win->width - (pt.width * size + size + panel_w)) / 2;
+	field_y = (win->height - pt.height * size) / 2;
+	if (field_x < 2) field_x = 2;
+	if (field_y < 2) field_y = 2;
+}
+
+// how long the loop can sleep before gravity is due, -1 when nothing is falling
+static int next_step_timeout(void) {
+	if (state != STATE_PLAYING)
+		return -1;
+
+	uint64_t since = now_ms() - last_step_ms;
+	if (since >= step_interval_ms())
+		return 0;
+	return (int)(step_interval_ms() - since);
+}
+
+// returns 1 when the screen needs a redraw
+static int handle_event(const cs_event_t *ev) {
+	switch (ev->type) {
+	case CS_EV_KEY: {
+		keyboard_event_t key = {0};
+		key.keycode = ev->keycode;
+		key.action = ev->key_action;
+		key.keymod = ev->keymod;
+		return handle_key(&key);
+	}
+	case CS_EV_RESIZE:
+		layout();
+		return 1;
+	case CS_EV_CLOSE_REQUEST:
+		quit = 1;
+		return 0;
+	}
 	return 0;
 }
 
 int main(void) {
-	if (video_init() < 0)
+	win = cs_window_open(WINDOW_WIDTH, WINDOW_HEIGHT, "Tetris");
+	if (!win) {
+		printf("tetris: this needs the crime-scene desktop, start that and run tetris from a terminal in it\n");
 		return 1;
-
-	input_init();
+	}
+	layout();
 
 	pt_rand_x += (uint32_t)(now_fs() / femtosecondsPerMicrosecond) + (uint32_t)_getpid();
 	new_game();
 	draw();
 
 	while (!quit) {
-		keyboard_event_t ev;
+		cs_event_t ev;
 		int dirty = 0;
 
-		while (_read(0, &ev, sizeof(ev)) == (long)sizeof(ev))
-			dirty |= handle_key(&ev);
+		// asleep until a key or the next drop, then take whatever else is waiting
+		if (cs_event_wait(&ev, next_step_timeout())) {
+			dirty |= handle_event(&ev);
+			while (!quit && cs_event_wait(&ev, 0))
+				dirty |= handle_event(&ev);
+		}
 
 		if (state == STATE_PLAYING && now_ms() - last_step_ms >= step_interval_ms()) {
 			step();
 			dirty = 1;
 		}
 
-		if (dirty)
+		if (dirty && !quit)
 			draw();
-
-		_yeild();
 	}
 
-	input_restore();
+	cs_window_close(win);
 
-	// hand the screen back to the tty
-	printf("\x1b[0m\x1b[2J");
 	printf("tetris: score %d, %d lines, level %d\n", score, pt.score, level);
 	fflush(stdout);
 	return 0;

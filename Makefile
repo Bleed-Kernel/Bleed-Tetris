@@ -13,6 +13,10 @@ CRT0 = $(LIB_DIR)/start.o
 BLIBC_REPO = https://github.com/Bleed-Kernel/blibc.git
 BLIBC_DIR  ?= ../blibc
 
+CRIME_REPO = https://github.com/Bleed-Kernel/Crime-Scene.git
+CRIME_DIR  ?= ../Crime-Scene
+LIBCRIME   = $(CRIME_DIR)/bin/libcrime.a
+
 COMMON_CFLAGS = \
 	-ffreestanding \
 	-fno-stack-protector \
@@ -24,6 +28,7 @@ COMMON_CFLAGS = \
 	-m64 \
 	-Isysroot/include \
 	-Isysroot/include/bleed \
+	-I$(CRIME_DIR)/include \
 	-nostdinc
 
 LDFLAGS = \
@@ -38,15 +43,26 @@ ELF_OBJS_64 = $(patsubst %.c,$(ELF_OBJ_DIR_64)/%.o,$(SRCS))
 
 all: $(ELF_TARGET_64)
 
-$(ELF_TARGET_64): blibc $(ELF_OBJS_64)
+$(ELF_TARGET_64): blibc crime $(ELF_OBJS_64)
 	@mkdir -p $(ELF_BIN_DIR_64)
 	$(CC) $(LDFLAGS) \
 		-o $(ELF_BIN_DIR_64)/$(ELF_TARGET_64) \
 		$(CRT0) \
 		$(ELF_OBJS_64) \
+		$(LIBCRIME) \
 		-l:blibc.a
 
-$(ELF_OBJS_64): blibc
+$(ELF_OBJS_64): blibc crime
+
+crime: $(LIBCRIME)
+
+# built against the same blibc we use, not whatever its own makefile would go and fetch
+$(LIBCRIME):
+	@echo "[CRIME] Preparing the window library"
+	@if [ ! -d "$(CRIME_DIR)" ]; then \
+		git clone $(CRIME_REPO) $(CRIME_DIR); \
+	fi
+	$(MAKE) -C $(CRIME_DIR) bin/libcrime.a BLIBC_DIR=$(abspath $(BLIBC_DIR))
 
 $(ELF_OBJ_DIR_64)/%.o: %.c ptetris.h
 	@mkdir -p $(dir $@)
@@ -76,4 +92,4 @@ clean:
 distclean:
 	rm -rf bin sysroot external
 
-.PHONY: all build clean distclean blibc rawdraw
+.PHONY: all build clean distclean blibc crime rawdraw
