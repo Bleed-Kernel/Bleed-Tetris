@@ -415,7 +415,7 @@ static int handle_event(const cs_event_t *ev) {
 int main(void) {
 	win = cs_window_open(WINDOW_WIDTH, WINDOW_HEIGHT, "Tetris");
 	if (!win) {
-		printf("tetris: this needs the crime-scene desktop, start that and run tetris from a terminal in it\n");
+		printf("CrimeScene Display Server is not running\n");
 		return 1;
 	}
 	layout();

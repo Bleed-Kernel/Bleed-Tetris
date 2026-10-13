@@ -13,9 +13,8 @@ CRT0 = $(LIB_DIR)/start.o
 BLIBC_REPO = https://github.com/Bleed-Kernel/blibc.git
 BLIBC_DIR  ?= ../blibc
 
-CRIME_REPO = https://github.com/Bleed-Kernel/Crime-Scene.git
 CRIME_DIR  ?= ../Crime-Scene
-LIBCRIME   = $(CRIME_DIR)/bin/libcrime.a
+LIBCRIME   = libcrime.a
 
 COMMON_CFLAGS = \
 	-ffreestanding \
@@ -56,13 +55,9 @@ $(ELF_OBJS_64): blibc crime
 
 crime: $(LIBCRIME)
 
-# built against the same blibc we use, not whatever its own makefile would go and fetch
+# never fetched or rebuilt, the prebuilt one is the only one we link
 $(LIBCRIME):
-	@echo "[CRIME] Preparing the window library"
-	@if [ ! -d "$(CRIME_DIR)" ]; then \
-		git clone $(CRIME_REPO) $(CRIME_DIR); \
-	fi
-	$(MAKE) -C $(CRIME_DIR) bin/libcrime.a BLIBC_DIR=$(abspath $(BLIBC_DIR))
+	@echo "[CRIME] $(LIBCRIME) is missing, put the prebuilt library there"; exit 1
 
 $(ELF_OBJ_DIR_64)/%.o: %.c ptetris.h
 	@mkdir -p $(dir $@)
