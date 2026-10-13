@@ -13,7 +13,8 @@ CRT0 = $(LIB_DIR)/start.o
 BLIBC_REPO = https://github.com/Bleed-Kernel/blibc.git
 BLIBC_DIR  ?= ../blibc
 
-CRIME_DIR  ?= ../Crime-Scene
+# headers for the prebuilt libcrime.a, kept in the repo so a fresh clone builds
+CRIME_INC  = include
 LIBCRIME   = libcrime.a
 
 COMMON_CFLAGS = \
@@ -27,7 +28,7 @@ COMMON_CFLAGS = \
 	-m64 \
 	-Isysroot/include \
 	-Isysroot/include/bleed \
-	-I$(CRIME_DIR)/include \
+	-I$(CRIME_INC) \
 	-nostdinc
 
 LDFLAGS = \
